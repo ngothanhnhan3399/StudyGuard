@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="StudyGuard">
+<link rel="manifest" href="manifest.json">
+<title>StudyGuard</title>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--tx:#111;--mu:#6b7280;--ac:#2563eb;--ok:#16a34a;--no:#dc2626;--bd:#e5e7eb}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#1a1d24;--tx:#f3f4f6;--mu:#9ca3af;--bd:#2a2e38}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:16px system-ui,sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+#app{max-width:520px;margin:auto;padding:12px}
+.c{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:14px;margin-bottom:12px}
+h2{margin:0 0 8px;font-size:17px}.mu{color:var(--mu);font-size:14px}
+button{font:inherit;border:0;border-radius:10px;padding:11px 14px;background:var(--ac);color:#fff;cursor:pointer}
+button.g{background:var(--bd);color:var(--tx)}button.r{background:var(--no)}button.k{background:var(--ok)}
+.row{display:flex;gap:8px;flex-wrap:wrap}.row>button{flex:1}
+input,select,textarea{font:inherit;width:100%;padding:10px;border-radius:10px;border:1px solid var(--bd);background:var(--bg);color:var(--tx);margin:4px 0}
+.big{font-size:22px;font-weight:600}
+.rule{border-top:1px solid var(--bd);padding:8px 0}
+.d{display:inline-block;padding:5px 8px;margin:2px;border-radius:8px;background:var(--bd);font-size:13px}.d.on{background:var(--ac);color:#fff}
+.t{display:flex;gap:6px}.t input,.t select{width:auto;flex:1}
+code{word-break:break-all;font-size:12px;display:block;background:var(--bg);padding:8px;border-radius:8px}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script>
+// ====== ĐIỀN 2 DÒNG NÀY ======
+const SUPABASE_URL = "https://pedgrjrjjcekpzwqkguu.supabase.co";       // https://xxxx.supabase.co
+const SUPABASE_ANON_KEY = "sb_publishable_cqYXCago95eNAEWQcfPs_Q_admVkHkK";  // anon public key
+const VAPID_PUBLIC_KEY = "BMJ6tuYbw_NYffY6NHRsFfjj6vhA9wd_dcFY4tLW-IKOX_x4Mh4iDNa_18qGn8rt8vyB8QyCYINrv-mtwe7QOjA";   // public key của VAPID (xem hướng dẫn)
+// =============================
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const app = document.getElementById("app");
+const DAYS = [["mon","T2"],["tue","T3"],["wed","T4"],["thu","T5"],["fri","T6"],["sat","T7"],["sun","CN"]];
+let devs = [], dev = null, pol = null;
+
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const hhmm = d => d.toTimeString().slice(0,5);
+const fmt = iso => new Date(iso).toLocaleTimeString("vi-VN",{hour:"2-digit",minute:"2-digit"});
+
+async function init(){
+  const {data:{session}} = await sb.auth.getSession();
+  session ? home() : login();
+}
+
+function login(msg=""){
+  app.innerHTML = `<div class="c"><h2>🛡️ StudyGuard</h2><p class="mu">${esc(msg)}</p>
+  <input id="em" type="email" placeholder="Email phụ huynh"><input id="pw" type="password" placeholder="Mật khẩu">
+  <div class="row"><button onclick="auth(false)">Đăng nhập</button><button class="g" onclick="auth(true)">Đăng ký</button></div></div>`;
+}
+async function auth(signup){
+  const email = em.value.trim(), password = pw.value;
+  const {error} = signup ? await sb.auth.signUp({email,password}) : await sb.auth.signInWithPassword({email,password});
+  error ? login(error.message) : (signup ? login("Kiểm tra email để xác nhận (nếu bật), rồi đăng nhập.") : home());
+}
+async function logout(){ await sb.auth.signOut(); login(); }
+
+async function home(){
+  const {data, error} = await sb.from("devices").select("*").order("created_at");
+  if(error) alert("Lỗi tải danh sách máy: "+error.message);
+  devs = data || [];
+  if(!devs.length) return addDevicePage();
+  dev = devs.find(d => d.id === localStorage.dev) || devs[0];
+  await loadPolicy(); render();
+}
+async function loadPolicy(){
+  pol = (await sb.from("policies").select("*").eq("device_id", dev.id).single()).data;
+}
+
+// Mirror logic của agent để hiển thị trạng thái
+function mode(){
+  const n = new Date();
+  if(pol.lock_until && new Date(pol.lock_until) > n) return ["study","Khóa thủ công đến "+fmt(pol.lock_until)];
+  if(pol.override_until && new Date(pol.override_until) > n) return ["free","Mở khóa tạm đến "+fmt(pol.override_until)];
+  const day = DAYS[(n.getDay()+6)%7][0], cur = hhmm(n);
+  for(const r of pol.schedule) if(r.days.includes(day) && cur >= r.from && cur < r.to) return [r.mode,"Theo lịch "+r.from+"–"+r.to];
+  return [pol.default_mode,"Ngoài lịch"];
+}
+
+async function render(){
+  const [m, why] = mode();
+  const online = dev.last_seen && Date.now() - new Date(dev.last_seen) < 120000;
+  const {data:logs} = await sb.from("block_logs").select("*").eq("device_id",dev.id).order("created_at",{ascending:false}).limit(15);
+  app.innerHTML = `
+  <div class="c"><select onchange="pick(this.value)">${devs.map(d=>`<option value="${d.id}" ${d.id===dev.id?"selected":""}>${esc(d.name)}</option>`).join("")}</select>
+    <div class="big">${m==="study"?"🔒 Giờ học":"🎮 Giờ chơi"}</div>
+    <div class="mu">${esc(why)} · ${online?"🟢 máy đang online":"⚪ máy offline"}</div>
+    <div class="row" style="margin-top:10px">
+      <button class="k" onclick="unlock(30)">Cho chơi 30 phút</button>
+      <button class="r" onclick="lockNow(60)">Khóa 60 phút</button>
+      <button class="g" onclick="clearOv()">Về theo lịch</button></div></div>
+  <div class="c"><h2>Lịch tuần</h2><div id="sch">${pol.schedule.map(ruleHtml).join("")}</div>
+    <div class="row"><button class="g" onclick="addRule()">+ Thêm khung giờ</button></div>
+    <p class="mu">Ngoài các khung giờ: <select id="dm" style="width:auto"><option value="free" ${pol.default_mode==="free"?"selected":""}>Chơi</option><option value="study" ${pol.default_mode==="study"?"selected":""}>Học</option></select></p></div>
+  <div class="c"><h2>App được phép (giờ học)</h2><p class="mu">Mỗi dòng một tên file .exe</p>
+    <textarea id="wa" rows="5">${esc(pol.whitelist_apps.join("\n"))}</textarea>
+    <h2>Từ khóa tiêu đề trình duyệt</h2><p class="mu">Tab có tiêu đề chứa từ khóa này mới được giữ</p>
+    <textarea id="wt" rows="4">${esc(pol.whitelist_titles.join("\n"))}</textarea>
+    <div class="row"><button onclick="saveAll()">Lưu thay đổi</button></div></div>
+  <div class="c"><h2>🚫 Luôn chặn (cả giờ chơi)</h2>
+    <p class="mu">Từ khóa tiêu đề trình duyệt bị đóng ngay: web đen, web lậu, nguồn tải game không rõ</p>
+    <textarea id="blt" rows="5">${esc((pol.blacklist_titles||[]).join("\n"))}</textarea>
+    <p class="mu">App luôn bị chặn (mỗi dòng một tên .exe)</p>
+    <textarea id="bla" rows="3">${esc((pol.blacklist_apps||[]).join("\n"))}</textarea>
+    <label class="mu"><input id="bdl" type="checkbox" style="width:auto" ${pol.block_download_exes!==false?"checked":""}> Chặn file .exe chạy từ Downloads/Temp</label>
+    <div class="row" style="margin-top:8px"><button onclick="saveAll()">Lưu thay đổi</button></div></div>
+  <div class="c"><h2>Nhật ký gần đây</h2>${(logs||[]).map(l=>`<div class="mu">${new Date(l.created_at).toLocaleString("vi-VN")} · ${l.action} · ${esc(l.app)}<br>${esc(l.title)}</div>`).join("<hr style='border:0;border-top:1px solid var(--bd)'>")||'<p class="mu">Chưa có.</p>'}</div>
+  <div class="row"><button class="g" onclick="enablePush()">🔔 Bật thông báo</button><button class="g" onclick="addDevicePage()">+ Thêm máy</button><button class="g" onclick="logout()">Đăng xuất</button></div>`;
+}
+function pick(id){ localStorage.dev = id; home(); }
+
+function ruleHtml(r){
+  return `<div class="rule"><div>${DAYS.map(([k,l])=>`<span class="d ${r.days.includes(k)?"on":""}" data-k="${k}" onclick="this.classList.toggle('on')">${l}</span>`).join("")}</div>
+  <div class="t"><select class="rm"><option value="study" ${r.mode==="study"?"selected":""}>Học</option><option value="free" ${r.mode==="free"?"selected":""}>Chơi</option></select>
+  <input class="rf" type="time" value="${r.from}"><input class="rt" type="time" value="${r.to}">
+  <button class="g" onclick="this.closest('.rule').remove()">✕</button></div></div>`;
+}
+function addRule(){ sch.insertAdjacentHTML("beforeend", ruleHtml({days:[],mode:"study",from:"19:00",to:"21:00"})); }
+
+async function patch(p){
+  const {error} = await sb.from("policies").update({...p, updated_at:new Date().toISOString()}).eq("device_id",dev.id);
+  if(error) return alert(error.message);
+  await loadPolicy(); render();
+}
+const iso = min => new Date(Date.now()+min*60000).toISOString();
+const unlock = min => patch({override_until:iso(min), lock_until:null});
+const lockNow = min => patch({lock_until:iso(min), override_until:null});
+const clearOv = () => patch({lock_until:null, override_until:null});
+function saveAll(){
+  const schedule = [...document.querySelectorAll(".rule")].map(e => ({
+    days:[...e.querySelectorAll(".d.on")].map(x=>x.dataset.k),
+    mode:e.querySelector(".rm").value, from:e.querySelector(".rf").value, to:e.querySelector(".rt").value
+  })).filter(r => r.days.length && r.from && r.to);
+  const lines = el => el.value.split("\n").map(s=>s.trim()).filter(Boolean);
+  patch({schedule, default_mode:dm.value, whitelist_apps:lines(wa), whitelist_titles:lines(wt), blacklist_apps:lines(bla), blacklist_titles:lines(blt), block_download_exes:bdl.checked});
+}
+
+// ---- Thêm máy mới ----
+async function addDevicePage(){
+  const {data:{user}} = await sb.auth.getUser();
+  app.innerHTML = `<div class="c"><h2>Thêm máy của bé</h2>
+  <p class="mu">Đang đăng nhập: ${esc(user?.email)}<br>Nếu bạn đã thêm máy trước đó mà vẫn thấy màn hình này, hãy đăng xuất và đăng nhập lại bằng đúng email đã dùng lúc thêm máy.</p>
+  <input id="dn" placeholder="Tên máy, VD: Laptop của Bin">
+  <div class="row"><button onclick="createDevice()">Tạo</button>${devs.length?'<button class="g" onclick="home()">Hủy</button>':""}<button class="g" onclick="logout()">Đăng xuất</button></div></div>`;
+}
+async function createDevice(){
+  const name = dn.value.trim() || "Máy của bé";
+  const token = [...crypto.getRandomValues(new Uint8Array(32))].map(b=>b.toString(16).padStart(2,"0")).join("");
+  const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)))].map(b=>b.toString(16).padStart(2,"0")).join("");
+  const {error} = await sb.rpc("register_device",{p_name:name,p_token_hash:hash});
+  if(error) return alert(error.message);
+  const cfg = JSON.stringify({server_url:SUPABASE_URL+"/functions/v1/agent", token}, null, 2);
+  app.innerHTML = `<div class="c"><h2>✅ Đã tạo "${esc(name)}"</h2>
+  <p class="mu">Token chỉ hiện <b>một lần</b>. Lưu nội dung dưới đây thành <b>agent.json</b> cạnh file studyguard.exe trên máy bé.</p>
+  <code id="cfg">${esc(cfg)}</code><div class="row" style="margin-top:8px"><button onclick="navigator.clipboard.writeText(cfg.textContent)">Sao chép</button><button class="g" onclick="home()">Xong</button></div></div>`;
+}
+
+// ---- Thông báo đẩy ----
+function b64u(s){const p="=".repeat((4-s.length%4)%4),b=atob((s+p).replace(/-/g,"+").replace(/_/g,"/"));return Uint8Array.from(b,c=>c.charCodeAt(0));}
+async function enablePush(){
+  if(!("serviceWorker" in navigator) || !("PushManager" in window))
+    return alert("Trên iPhone: bấm Chia sẻ > Thêm vào Màn hình chính, mở app từ icon rồi bấm lại.");
+  if(await Notification.requestPermission() !== "granted") return alert("Bạn chưa cho phép thông báo.");
+  const reg = await navigator.serviceWorker.ready;
+  const sub = (await reg.pushManager.getSubscription()) || await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:b64u(VAPID_PUBLIC_KEY)});
+  const j = sub.toJSON(), {data:{user}} = await sb.auth.getUser();
+  const {error} = await sb.from("push_subs").upsert({owner_id:user.id, endpoint:j.endpoint, p256dh:j.keys.p256dh, auth:j.keys.auth}, {onConflict:"endpoint"});
+  alert(error ? error.message : "Đã bật thông báo ✅");
+}
+if("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");
+
+init();
+</script>
+</body>
+</html>
