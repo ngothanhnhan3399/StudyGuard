@@ -84,16 +84,22 @@ function mode(){
 
 async function render(){
   const [m, why] = mode();
+  const paused = pol.paused_until && new Date(pol.paused_until) > new Date();
   const online = dev.last_seen && Date.now() - new Date(dev.last_seen) < 120000;
   const {data:logs} = await sb.from("block_logs").select("*").eq("device_id",dev.id).order("created_at",{ascending:false}).limit(15);
   app.innerHTML = `
-  <div class="c"><select onchange="pick(this.value)">${devs.map(d=>`<option value="${d.id}" ${d.id===dev.id?"selected":""}>${esc(d.name)}</option>`).join("")}</select>
-    <div class="big">${m==="study"?"🔒 Giờ học":"🎮 Giờ chơi"}</div>
+  <div class="c"><select onchange="pick(this.value)">${devs.map(d=>`<option value="${d.id}" ${d.id===dev.id?"selected":""}>${esc(d.name)} ${d.last_seen&&Date.now()-new Date(d.last_seen)<120000?"🟢":"⚪"}</option>`).join("")}</select>
+    <div class="big">${paused?"⏸ Đã tạm dừng":(m==="study"?"🔒 Giờ học":"🎮 Giờ chơi")}</div>
     <div class="mu">${esc(why)} · ${online?"🟢 máy đang online":"⚪ máy offline"}</div>
     <div class="row" style="margin-top:10px">
       <button class="k" onclick="unlock(30)">Cho chơi 30 phút</button>
       <button class="r" onclick="lockNow(60)">Khóa 60 phút</button>
       <button class="g" onclick="clearOv()">Về theo lịch</button></div></div>
+  <div class="c"><h2>🛑 Thoát khẩn cấp</h2>
+    <p class="mu">${paused?"Bảo vệ đang tạm dừng "+(new Date(pol.paused_until).getFullYear()>2090?"cho đến khi bạn bật lại.":"đến "+fmt(pol.paused_until)+"."):"Dùng khi phần mềm lỗi, chặn nhầm hoặc máy bị kẹt. Có hiệu lực sau tối đa 30 giây."}</p>
+    <div class="row">${paused?'<button class="k" onclick="resume()">▶️ Bật lại bảo vệ</button>':'<button class="r" onclick="pauseFor(120)">Tạm dừng 2 giờ</button><button class="r" onclick="pauseFor(-1)">Tắt hẳn</button>'}</div>
+    <p class="mu" style="margin-top:10px">Task Manager của bé: <b>${pol.allow_taskmgr?"đang bật":"đang tắt"}</b></p>
+    <div class="row"><button class="g" onclick="setTaskMgr(${!pol.allow_taskmgr})">${pol.allow_taskmgr?"Tắt Task Manager":"Bật Task Manager"}</button></div></div>
   <div class="c"><h2>Lịch tuần</h2><div id="sch">${pol.schedule.map(ruleHtml).join("")}</div>
     <div class="row"><button class="g" onclick="addRule()">+ Thêm khung giờ</button></div>
     <p class="mu">Ngoài các khung giờ: <select id="dm" style="width:auto"><option value="free" ${pol.default_mode==="free"?"selected":""}>Chơi</option><option value="study" ${pol.default_mode==="study"?"selected":""}>Học</option></select></p></div>
@@ -110,6 +116,7 @@ async function render(){
     <label class="mu"><input id="bdl" type="checkbox" style="width:auto" ${pol.block_download_exes!==false?"checked":""}> Chặn file .exe chạy từ Downloads/Temp</label>
     <div class="row" style="margin-top:8px"><button onclick="saveAll()">Lưu thay đổi</button></div></div>
   <div class="c"><h2>Nhật ký gần đây</h2>${(logs||[]).map(l=>`<div class="mu">${new Date(l.created_at).toLocaleString("vi-VN")} · ${l.action} · ${esc(l.app)}<br>${esc(l.title)}</div>`).join("<hr style='border:0;border-top:1px solid var(--bd)'>")||'<p class="mu">Chưa có.</p>'}</div>
+  <div class="row" style="margin-bottom:8px"><button class="g" onclick="renameDevice()">✏️ Đổi tên máy</button><button class="r" onclick="delDevice()">🗑 Xóa máy này</button></div>
   <div class="row"><button class="g" onclick="enablePush()">🔔 Bật thông báo</button><button class="g" onclick="addDevicePage()">+ Thêm máy</button><button class="g" onclick="logout()">Đăng xuất</button></div>`;
 }
 function pick(id){ localStorage.dev = id; home(); }
@@ -158,6 +165,25 @@ async function createDevice(){
   app.innerHTML = `<div class="c"><h2>✅ Đã tạo "${esc(name)}"</h2>
   <p class="mu">Token chỉ hiện <b>một lần</b>. Lưu nội dung dưới đây thành <b>agent.json</b> cạnh file studyguard.exe trên máy bé.</p>
   <code id="cfg">${esc(cfg)}</code><div class="row" style="margin-top:8px"><button onclick="navigator.clipboard.writeText(cfg.textContent)">Sao chép</button><button class="g" onclick="home()">Xong</button></div></div>`;
+}
+
+// ---- Thoát khẩn cấp / Task Manager ----
+const pauseFor = min => confirm(min>0 ? "Tạm dừng bảo vệ 2 giờ?" : "Tắt hẳn bảo vệ cho đến khi bạn bật lại?") && patch({paused_until: min>0 ? iso(min) : "2100-01-01T00:00:00Z"});
+const resume = () => patch({paused_until:null});
+const setTaskMgr = on => patch({allow_taskmgr:on});
+
+// ---- Đổi tên / xóa máy ----
+async function renameDevice(){
+  const name = (prompt("Tên mới cho máy:", dev.name) || "").trim();
+  if(!name) return;
+  const {error} = await sb.from("devices").update({name}).eq("id", dev.id);
+  error ? alert(error.message) : home();
+}
+async function delDevice(){
+  if(!confirm('Xóa máy "'+dev.name+'"? Máy này sẽ không nhận lệnh nữa, lịch và nhật ký của máy cũng bị xóa.')) return;
+  const {error} = await sb.from("devices").delete().eq("id", dev.id);
+  if(error) return alert(error.message);
+  localStorage.removeItem("dev"); home();
 }
 
 // ---- Thông báo đẩy ----
